@@ -188,7 +188,7 @@ export async function exnessFetch<T>(opts: {
     finish(response.status, false, detail);
     throw new ExnessApiError(response.status, "Exness API returned an invalid JSON response: " + detail);
   }
-}}
+}
 
 export type AccessPoint = { access_point: string; account_id: string };
 
