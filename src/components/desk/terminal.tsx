@@ -10,6 +10,7 @@ import {
   modifyOrder,
   pullOrderHistory,
   pullDealHistory,
+  pullLimits,
   readOperation,
   type OrderHistoryRecord,
   type DealHistoryRecord,
@@ -584,6 +585,23 @@ export function Terminal() {
       const range = cursor ? { cursor, limit: 100 } : {
         from: from.toISOString(), to: to.toISOString(), instrument: credsRef.current.instrument.trim(), limit: 100,
       };
+      if (!cursor) {
+        const limits = await pullLimits(credsRef.current, link.access);
+        const operationId = historyTab === "orders" ? "getOrdersHistory" : "getDealsHistory";
+        const methodLimit = limits.limits.rest.methods.find((method) => method.api_operation_id === operationId)?.limits;
+        if (!methodLimit?.history_range_days || !methodLimit.history_age_days) {
+          throw new Error(`Exness did not provide history range/age limits for ${operationId}; refusing an unbounded history request.`);
+        }
+        const rangeDays = (to.getTime() - from.getTime()) / 86400000;
+        const ageDays = (Date.now() - from.getTime()) / 86400000;
+        if (rangeDays > methodLimit.history_range_days) {
+          throw new Error(`Selected range is ${rangeDays.toFixed(1)} days; Exness allows up to ${methodLimit.history_range_days} days per history request.`);
+        }
+        if (ageDays > methodLimit.history_age_days) {
+          throw new Error(`Selected start is ${ageDays.toFixed(1)} days old; Exness history retention limit is ${methodLimit.history_age_days} days.`);
+        }
+        if (from.getTime() >= Date.now()) throw new Error("History start time must be earlier than current time.");
+      }
       if (historyTab === "orders") {
         const page = await pullOrderHistory(credsRef.current, link.access, range);
         setHistoryOrders((current) => cursor ? [...current, ...page.items] : page.items);

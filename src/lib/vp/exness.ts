@@ -280,11 +280,12 @@ export async function pullAccount(creds: Creds): Promise<{
     method: "GET",
     pathWithQuery: `/v1/trading/accounts/${id}/snapshot`,
   });
-  if (!account || typeof account !== "object" || !conditions || typeof conditions !== "object" ||
-      !snapshot || typeof snapshot !== "object" ||
+  if (!account || typeof account !== "object" || typeof account.account_id !== "string" ||
+      !conditions || typeof conditions !== "object" || typeof conditions.instrument !== "string" ||
+      !snapshot || typeof snapshot !== "object" || !snapshot.account_state ||
       (snapshot.positions !== undefined && !Array.isArray(snapshot.positions)) ||
       (snapshot.orders !== undefined && !Array.isArray(snapshot.orders))) {
-    throw new Error("Exness account response validation failed: unexpected account, conditions or snapshot shape.");
+    throw new Error("Exness account response validation failed: account_id, instrument, account_state or collection shape is invalid.");
   }
   return { access, account, conditions, snapshot };
 }
@@ -415,10 +416,20 @@ export async function readOperation(
 
 
 export type ApiLimits = {
-  limits?: {
-    candles?: { max_count?: number; [key: string]: unknown };
-    websocket?: { [key: string]: unknown };
-    [key: string]: unknown;
+  limits: {
+    rest: {
+      methods: Array<{
+        api_operation_id: string;
+        http_method: string;
+        path: string;
+        limits?: {
+          max_candles_per_request?: number;
+          history_range_days?: number;
+          history_age_days?: number;
+        };
+      }>;
+    };
+    websocket: Record<string, unknown>;
   };
 };
 
@@ -501,12 +512,22 @@ function accountPath(creds: Creds, suffix: string): string {
 }
 
 /** Fetch current REST/WebSocket limits. Use the returned limits before opening streams or requesting large candle ranges. */
-export function pullLimits(creds: Creds, access: string): Promise<ApiLimits> {
-  return exnessFetch({
+export async function pullLimits(creds: Creds, access: string): Promise<ApiLimits> {
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET",
     pathWithQuery: `/v1/configuration/accounts/${encodeURIComponent(creds.accountId.trim())}/limits`,
   });
+  const root = expectRecord(response, "account limits");
+  const limits = expectRecord(root.limits, "account limits");
+  const rest = expectRecord(limits.rest, "REST limits");
+  const websocket = expectRecord(limits.websocket, "WebSocket limits");
+  if (!Array.isArray(rest.methods)) throw new Error("Exness account limits response is missing REST methods.");
+  for (const [index, method] of rest.methods.entries()) {
+    const entry = expectRecord(method, `REST method limit ${index + 1}`);
+    expectStringField(entry, "api_operation_id", `REST method limit ${index + 1}`);
+  }
+  return { limits: { rest: { methods: rest.methods as ApiLimits["limits"]["rest"]["methods"] }, websocket } };
 }
 
 /** Refresh the authoritative current open orders, positions and account state. */
@@ -515,10 +536,10 @@ export async function pullSnapshot(creds: Creds, access: string): Promise<Tradin
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET", pathWithQuery: accountPath(creds, "/snapshot"),
   });
-  if (!snapshot || typeof snapshot !== "object" ||
+  if (!snapshot || typeof snapshot !== "object" || !snapshot.account_state ||
       (snapshot.orders !== undefined && !Array.isArray(snapshot.orders)) ||
       (snapshot.positions !== undefined && !Array.isArray(snapshot.positions))) {
-    throw new Error("Exness trading snapshot response validation failed.");
+    throw new Error("Exness trading snapshot response validation failed: account_state, orders or positions has an invalid shape.");
   }
   return snapshot;
 }
