@@ -16,6 +16,7 @@ import {
   type DealHistoryRecord,
   type Creds,
   type Snapshot,
+  type ApiDiagnostic,
 } from "@/lib/vp/exness";
 import {
   DEFAULT_SETTINGS,
@@ -178,6 +179,8 @@ export function Terminal() {
     instrument: "XAUUSD",
   });
   const [broker, setBroker] = useState<Broker>(IDLE_BROKER);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [apiDiagnostics, setApiDiagnostics] = useState<ApiDiagnostic[]>([]);
   const [liveArmed, setLiveArmed] = useState(false);
   const [liveNote, setLiveNote] = useState("Live orders are off.");
   const [pendingType, setPendingType] = useState<"limit" | "stop">("limit");
@@ -208,6 +211,15 @@ export function Terminal() {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
+
+  useEffect(() => {
+    const onDiagnostic = (event: Event) => {
+      const detail = (event as CustomEvent<ApiDiagnostic>).detail;
+      if (detail) setApiDiagnostics((current) => [detail, ...current].slice(0, 30));
+    };
+    window.addEventListener("vela:api-diagnostic", onDiagnostic);
+    return () => window.removeEventListener("vela:api-diagnostic", onDiagnostic);
+  }, []);
 
   const tapeRef = useRef(tape);
   const sessionRef = useRef(session);
