@@ -11,7 +11,6 @@ import {
   pullOrderHistory,
   pullDealHistory,
   readOperation,
-  type HistoryPage,
   type OrderHistoryRecord,
   type DealHistoryRecord,
   type Creds,
@@ -143,7 +142,7 @@ function mapSnapshot(snapshot: Snapshot): Broker["positions"] {
 
 function mapOrders(snapshot: Snapshot): Broker["orders"] {
   return (snapshot.orders ?? [])
-    .filter((order) => !order.state || order.state === "placed" || order.state === "pending")
+    .filter((order) => !order.state || order.state === "placed" || order.state === "pending_new" || order.state === "pending")
     .map((order) => ({
       id: order.order_id ?? "",
       side: order.direction ?? "",

@@ -216,12 +216,16 @@ export type Conditions = {
 export type Snapshot = {
   orders?: Array<{
     order_id?: string;
+    position_id?: string;
     order_type?: string;
     state?: string;
     direction?: string;
     instrument?: string;
     price?: string;
     volume?: string;
+    stop_loss_price?: string | null;
+    take_profit_price?: string | null;
+    create_time?: string;
   }>;
   positions?: Array<{
     position_id?: string;
