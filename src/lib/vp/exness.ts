@@ -131,6 +131,7 @@ export async function exnessFetch<T>(opts: {
   method: string;
   pathWithQuery: string;
   body?: unknown;
+  idempotencyKey?: string;
 }): Promise<T> {
   const body = opts.body == null ? "" : JSON.stringify(opts.body);
   const headers = await signedHeaders({
@@ -139,6 +140,7 @@ export async function exnessFetch<T>(opts: {
     method: opts.method,
     pathWithQuery: opts.pathWithQuery,
     body,
+    idempotency: opts.idempotencyKey,
   });
   if (body) headers["Content-Type"] = "application/json";
   let response: Response;
@@ -251,12 +253,27 @@ type RawCandle = {
   volume?: number;
 };
 
-export async function pullCandles(creds: Creds, access: string, count = 500): Promise<RawCandle[]> {
-  const from = new Date(Date.now() - count * 5 * 60 * 1000).toISOString();
+export type CandleTimeframe = "S1" | "S5" | "S15" | "M1" | "M3" | "M5" | "M10" | "M15" | "M30" | "H1" | "H2" | "H4" | "D1" | "W1" | "MN";
+
+export async function pullCandles(
+  creds: Creds,
+  access: string,
+  count = 500,
+  timeframe: CandleTimeframe = "M5",
+  priceType: "bid" | "ask" | "both" = "bid",
+): Promise<RawCandle[]> {
+  if (!Number.isInteger(count) || count === 0) throw new Error("Candle count must be a non-zero integer.");
+  const durationMs: Record<CandleTimeframe, number> = {
+    S1: 1_000, S5: 5_000, S15: 15_000, M1: 60_000, M3: 180_000,
+    M5: 300_000, M10: 600_000, M15: 900_000, M30: 1_800_000,
+    H1: 3_600_000, H2: 7_200_000, H4: 14_400_000, D1: 86_400_000,
+    W1: 604_800_000, MN: 2_592_000_000,
+  };
+  const from = new Date(Date.now() - Math.abs(count) * durationMs[timeframe]).toISOString();
   const query = [
     `instrument=${encodeURIComponent(creds.instrument.trim())}`,
-    "price_type=bid",
-    "timeframe=M5",
+    `price_type=${priceType}`,
+    `timeframe=${timeframe}`,
     `from=${encodeURIComponent(from)}`,
     `count=${count}`,
   ].join("&");
@@ -296,5 +313,172 @@ export async function readOperation(
     privateKey: creds.privateKey,
     method: "GET",
     pathWithQuery: `/v1/trading/accounts/${creds.accountId.trim()}/operations/${operationId}`,
+  });
+}
+
+
+export type ApiLimits = {
+  limits?: {
+    candles?: { max_count?: number; [key: string]: unknown };
+    websocket?: { [key: string]: unknown };
+    [key: string]: unknown;
+  };
+};
+
+export type TradingSnapshot = Snapshot & {
+  orders?: Array<{
+    order_id?: string;
+    position_id?: string;
+    order_type?: string;
+    state?: string;
+    direction?: string;
+    instrument?: string;
+    price?: string;
+    volume?: string;
+    stop_loss_price?: string;
+    take_profit_price?: string;
+    create_time?: string;
+  }>;
+};
+
+export type Ack = {
+  operation_id?: string;
+  client_request_id?: string;
+  status: "accepted" | string;
+};
+
+function accountPath(creds: Creds, suffix: string): string {
+  const accountId = encodeURIComponent(creds.accountId.trim());
+  if (!accountId) throw new Error("Account ID is missing.");
+  return `/v1/trading/accounts/${accountId}${suffix}`;
+}
+
+/** Fetch current REST/WebSocket limits. Use the returned limits before opening streams or requesting large candle ranges. */
+export function pullLimits(creds: Creds, access: string): Promise<ApiLimits> {
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "GET",
+    pathWithQuery: `/v1/configuration/accounts/${encodeURIComponent(creds.accountId.trim())}/limits`,
+  });
+}
+
+/** Refresh the authoritative current open orders, positions and account state. */
+export function pullSnapshot(creds: Creds, access: string): Promise<TradingSnapshot> {
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "GET", pathWithQuery: accountPath(creds, "/snapshot"),
+  });
+}
+
+/** Place a limit/stop pending order or an SLTP instruction, according to the Trader API contract. */
+export function placePendingOrder(
+  creds: Creds,
+  access: string,
+  body: Record<string, string>,
+  requestId?: string,
+): Promise<Ack> {
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "POST", pathWithQuery: accountPath(creds, "/orders"),
+    body, idempotencyKey: requestId || idempotencyKey(),
+  });
+}
+
+/** Modify an active pending/SLTP order. Use null to remove an existing SL or TP. */
+export function modifyOrder(
+  creds: Creds,
+  access: string,
+  orderId: string,
+  changes: { price?: string; stop_loss_price?: string | null; take_profit_price?: string | null; comment?: string },
+  requestId?: string,
+): Promise<Ack> {
+  if (!/^\\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
+  if (!Object.keys(changes).some((key) => key !== "comment")) throw new Error("At least one order price field must change.");
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "PATCH",
+    pathWithQuery: accountPath(creds, `/orders/${encodeURIComponent(orderId)}`),
+    body: changes, idempotencyKey: requestId || idempotencyKey(),
+  });
+}
+
+/** Cancel an active pending or SLTP order. */
+export function cancelOrder(
+  creds: Creds,
+  access: string,
+  orderId: string,
+  requestId?: string,
+): Promise<Ack> {
+  if (!/^\\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "DELETE",
+    pathWithQuery: accountPath(creds, `/orders/${encodeURIComponent(orderId)}`),
+    idempotencyKey: requestId || idempotencyKey(),
+  });
+}
+
+/** Close a position fully, or partially when volume is supplied. */
+export function closePosition(
+  creds: Creds,
+  access: string,
+  positionId: string,
+  options: { volume?: string; price?: string; deviation?: string } = {},
+  requestId?: string,
+): Promise<Ack> {
+  if (!/^\\d{1,20}$/.test(positionId)) throw new Error("Invalid position ID.");
+  const params = new URLSearchParams();
+  if (options.volume !== undefined) params.set("volume", options.volume);
+  if (options.price !== undefined) params.set("price", options.price);
+  if (options.deviation !== undefined) params.set("deviation", options.deviation);
+  const query = params.toString();
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "DELETE",
+    pathWithQuery: accountPath(creds, `/positions/${encodeURIComponent(positionId)}`)+(query ? `?${query}` : ""),
+    idempotencyKey: requestId || idempotencyKey(),
+  });
+}
+
+export type HistoryPage<T> = { items?: T[]; next_cursor?: string; has_more?: boolean };
+export type HistoryRange = { from?: string; to?: string; cursor?: string; limit?: number; instrument?: string };
+
+function historyQuery(range: HistoryRange): string {
+  if (range.cursor && (range.from || range.to || range.instrument)) {
+    throw new Error("History cursor cannot be combined with date or instrument filters.");
+  }
+  const params = new URLSearchParams();
+  if (range.cursor) params.set("cursor", range.cursor);
+  else {
+    if (!range.from) throw new Error("History start time is required.");
+    params.set("from", range.from);
+    if (range.to) params.set("to", range.to);
+    if (range.instrument) params.set("instrument", range.instrument);
+  }
+  const limit = range.limit ?? 100;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 200) throw new Error("History limit must be between 1 and 200.");
+  params.set("limit", String(limit));
+  return params.toString();
+}
+
+/** Historical orders only; active orders must be read from the trading snapshot. */
+export function pullOrderHistory(
+  creds: Creds, access: string, range: HistoryRange,
+): Promise<HistoryPage<Record<string, unknown>>> {
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "GET",
+    pathWithQuery: `/v1/history/accounts/${encodeURIComponent(creds.accountId.trim())}/orders?${historyQuery(range)}`,
+  });
+}
+
+/** Historical deals, including close/open and balance-related activity. */
+export function pullDealHistory(
+  creds: Creds, access: string, range: HistoryRange,
+): Promise<HistoryPage<Record<string, unknown>>> {
+  return exnessFetch({
+    base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
+    method: "GET",
+    pathWithQuery: `/v1/history/accounts/${encodeURIComponent(creds.accountId.trim())}/deals?${historyQuery(range)}`,
   });
 }
