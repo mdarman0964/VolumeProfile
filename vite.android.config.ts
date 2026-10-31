@@ -11,7 +11,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
  * This deliberately does not load TanStack Start, Nitro, auth, or a remote app URL.
  */
 export default defineConfig({
-  root: resolve(root, "android"),
+  root: resolve(root, "android-web"),
   base: "./",
   resolve: {
     alias: { "@": resolve(root, "src") },
