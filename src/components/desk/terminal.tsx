@@ -1061,7 +1061,7 @@ export function Terminal() {
                   )) : historyDeals.map((item) => (
                     <li key={item.deal.deal_id} className="rounded border border-line p-2">
                       <div className="font-mono">{item.deal.instrument || item.deal.type} {item.deal.direction || ""} · {item.deal.type}</div>
-                      <div className="text-muted">{new Date(item.event_time).toLocaleString()} · {item.deal.volume || "—"} @ {item.deal.price || "—"} · P/L {item.deal.profit || "—"} · #{item.deal.deal_id}</div>
+                      <div className="text-muted">{new Date(item.event_time).toLocaleString()} · {item.deal.volume || "—"} @ {item.deal.price || "—"} · P/L {item.deal.profit?.amount ? `${item.deal.profit.amount} ${item.deal.profit.currency || ""}` : "—"} · #{item.deal.deal_id}</div>
                     </li>
                   ))}
                 </ul>

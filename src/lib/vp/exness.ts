@@ -492,7 +492,7 @@ export type DealHistoryRecord = {
     instrument?: string;
     volume?: string;
     price?: string;
-    profit?: string;
+    profit?: { amount?: string; currency?: string };
     commission?: string;
     create_time?: string;
   };
