@@ -951,7 +951,7 @@ export function Terminal() {
               <h2 className="text-sm font-semibold">Exness</h2>
               <p className="mt-2 text-sm text-pretty text-muted">{broker.detail}</p>
               <div className="mt-3 grid gap-2">
-                <TextField label="Gateway host" value={creds.gateway} onChange={(gateway) => setCreds({ ...creds, gateway })} placeholder="https://…" />
+                <TextField label="Exness access-point URL" value={creds.gateway} onChange={(gateway) => setCreds({ ...creds, gateway })} placeholder="https://assigned-access-point-host" />
                 <TextField label="Account" value={creds.accountId} onChange={(accountId) => setCreds({ ...creds, accountId })} placeholder="123456" />
                 <TextField label="API key" value={creds.apiKey} onChange={(apiKey) => setCreds({ ...creds, apiKey })} placeholder="exnsk-…" />
                 <TextField
@@ -969,6 +969,7 @@ export function Terminal() {
                 <button type="button" className="btn h-11" onClick={() => void loadBrokerCandles()} disabled={!broker.access || broker.phase === "busy"}>
                   Load candles
                 </button>
+                <button type="button" className={debugOpen ? "btn-neon h-11 px-3" : "btn h-11 px-3"} onClick={() => setDebugOpen((open) => !open)}>{debugOpen ? "Hide debug" : "Debug"}</button>
                 <button
                   type="button"
                   className={liveArmed ? "btn h-11 border-down text-down" : "btn h-11"}
