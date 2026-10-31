@@ -275,6 +275,12 @@ export async function pullAccount(creds: Creds): Promise<{
     method: "GET",
     pathWithQuery: `/v1/trading/accounts/${id}/snapshot`,
   });
+  if (!account || typeof account !== "object" || !conditions || typeof conditions !== "object" ||
+      !snapshot || typeof snapshot !== "object" ||
+      (snapshot.positions !== undefined && !Array.isArray(snapshot.positions)) ||
+      (snapshot.orders !== undefined && !Array.isArray(snapshot.orders))) {
+    throw new Error("Exness account response validation failed: unexpected account, conditions or snapshot shape.");
+  }
   return { access, account, conditions, snapshot };
 }
 
@@ -318,15 +324,59 @@ export async function pullCandles(
     method: "GET",
     pathWithQuery: `/v1/market-data/accounts/${creds.accountId.trim()}/candles?${query}`,
   });
-  return payload.candles ?? [];
+  if (!Array.isArray(payload.candles)) throw new Error("Exness candles response is missing the candles array.");
+  return payload.candles;
+}
+
+function expectRecord(value: unknown, endpoint: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`Exness ${endpoint} response is not a JSON object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function expectStringField(record: Record<string, unknown>, field: string, endpoint: string): string {
+  const value = record[field];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`Exness ${endpoint} response is missing required field "${field}".`);
+  }
+  return value;
+}
+
+function validateAck(value: unknown, endpoint: string): Ack {
+  const record = expectRecord(value, endpoint);
+  const status = expectStringField(record, "status", endpoint);
+  if (status !== "accepted") throw new Error(`Exness ${endpoint} returned unexpected ACK status "${status}".`);
+  if (record.operation_id !== undefined && typeof record.operation_id !== "string") {
+    throw new Error(`Exness ${endpoint} returned an invalid operation_id.`);
+  }
+  return record as unknown as Ack;
+}
+
+function validateHistoryPage<T>(value: unknown, entity: "order" | "deal"): HistoryPage<T> {
+  const record = expectRecord(value, `${entity} history`);
+  if (!Array.isArray(record.items)) throw new Error(`Exness ${entity} history response is missing the items array.`);
+  for (const [index, raw] of record.items.entries()) {
+    const item = expectRecord(raw, `${entity} history item ${index + 1}`);
+    expectStringField(item, "event_time", `${entity} history item ${index + 1}`);
+    const nested = expectRecord(item[entity], `${entity} history item ${index + 1}`);
+    expectStringField(nested, entity === "order" ? "order_id" : "deal_id", `${entity} history item ${index + 1}`);
+  }
+  if (record.next_cursor !== undefined && typeof record.next_cursor !== "string") {
+    throw new Error(`Exness ${entity} history response has an invalid next_cursor.`);
+  }
+  if (record.has_more !== undefined && typeof record.has_more !== "boolean") {
+    throw new Error(`Exness ${entity} history response has an invalid has_more flag.`);
+  }
+  return record as unknown as HistoryPage<T>;
 }
 
 export async function placeMarket(
   creds: Creds,
   access: string,
   body: Record<string, string>,
-): Promise<{ operation_id?: string; status?: string; client_request_id?: string }> {
-  return exnessFetch({
+): Promise<Ack> {
+  const response = await exnessFetch<unknown>({
     base: access,
     apiKey: creds.apiKey,
     privateKey: creds.privateKey,
@@ -334,6 +384,7 @@ export async function placeMarket(
     pathWithQuery: `/v1/trading/accounts/${creds.accountId.trim()}/positions`,
     body,
   });
+  return validateAck(response, "market position request");
 }
 
 export async function readOperation(
@@ -341,13 +392,20 @@ export async function readOperation(
   access: string,
   operationId: string,
 ): Promise<OperationStatus> {
-  return exnessFetch({
+  if (!/^\\d{1,20}$/.test(operationId)) throw new Error("Invalid operation ID.");
+  const response = await exnessFetch<unknown>({
     base: access,
     apiKey: creds.apiKey,
     privateKey: creds.privateKey,
     method: "GET",
-    pathWithQuery: `/v1/trading/accounts/${creds.accountId.trim()}/operations/${operationId}`,
+    pathWithQuery: `/v1/trading/accounts/${encodeURIComponent(creds.accountId.trim())}/operations/${encodeURIComponent(operationId)}`,
   });
+  const record = expectRecord(response, "operation status");
+  const status = expectStringField(record, "status", "operation status");
+  if (!["pending", "confirmed", "rejected", "failed"].includes(status)) {
+    throw new Error(`Exness operation status response contains unknown status "${status}".`);
+  }
+  return record as unknown as OperationStatus;
 }
 
 
@@ -447,11 +505,17 @@ export function pullLimits(creds: Creds, access: string): Promise<ApiLimits> {
 }
 
 /** Refresh the authoritative current open orders, positions and account state. */
-export function pullSnapshot(creds: Creds, access: string): Promise<TradingSnapshot> {
-  return exnessFetch({
+export async function pullSnapshot(creds: Creds, access: string): Promise<TradingSnapshot> {
+  const snapshot = await exnessFetch<TradingSnapshot>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET", pathWithQuery: accountPath(creds, "/snapshot"),
   });
+  if (!snapshot || typeof snapshot !== "object" ||
+      (snapshot.orders !== undefined && !Array.isArray(snapshot.orders)) ||
+      (snapshot.positions !== undefined && !Array.isArray(snapshot.positions))) {
+    throw new Error("Exness trading snapshot response validation failed.");
+  }
+  return snapshot;
 }
 
 /** Place a limit/stop pending order or an SLTP instruction, according to the Trader API contract. */
@@ -461,11 +525,12 @@ export function placePendingOrder(
   body: Record<string, string>,
   requestId?: string,
 ): Promise<Ack> {
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "POST", pathWithQuery: accountPath(creds, "/orders"),
     body, idempotencyKey: requestId || idempotencyKey(),
   });
+  return validateAck(response, "order request");
 }
 
 /** Modify an active pending/SLTP order. Use null to remove an existing SL or TP. */
@@ -478,12 +543,13 @@ export function modifyOrder(
 ): Promise<Ack> {
   if (!/^\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
   if (!Object.keys(changes).some((key) => key !== "comment")) throw new Error("At least one order price field must change.");
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "PATCH",
     pathWithQuery: accountPath(creds, `/orders/${encodeURIComponent(orderId)}`),
     body: changes, idempotencyKey: requestId || idempotencyKey(),
   });
+  return validateAck(response, "order modification");
 }
 
 /** Cancel an active pending or SLTP order. */
@@ -494,12 +560,13 @@ export function cancelOrder(
   requestId?: string,
 ): Promise<Ack> {
   if (!/^\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "DELETE",
     pathWithQuery: accountPath(creds, `/orders/${encodeURIComponent(orderId)}`),
     idempotencyKey: requestId || idempotencyKey(),
   });
+  return validateAck(response, "order cancellation");
 }
 
 /** Close a position fully, or partially when volume is supplied. */
@@ -516,12 +583,13 @@ export function closePosition(
   if (options.price !== undefined) params.set("price", options.price);
   if (options.deviation !== undefined) params.set("deviation", options.deviation);
   const query = params.toString();
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "DELETE",
     pathWithQuery: accountPath(creds, `/positions/${encodeURIComponent(positionId)}`)+(query ? `?${query}` : ""),
     idempotencyKey: requestId || idempotencyKey(),
   });
+  return validateAck(response, "position close");
 }
 
 export type HistoryRange = { from?: string; to?: string; cursor?: string; limit?: number; instrument?: string };
@@ -552,20 +620,22 @@ function historyQuery(range: HistoryRange): string {
 export function pullOrderHistory(
   creds: Creds, access: string, range: HistoryRange,
 ): Promise<HistoryPage<OrderHistoryRecord>> {
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET",
     pathWithQuery: `/v1/history/accounts/${encodeURIComponent(creds.accountId.trim())}/orders?${historyQuery(range)}`,
   });
+  return validateHistoryPage<OrderHistoryRecord>(response, "order");
 }
 
 /** Historical deals, including close/open and balance-related activity. */
 export function pullDealHistory(
   creds: Creds, access: string, range: HistoryRange,
 ): Promise<HistoryPage<DealHistoryRecord>> {
-  return exnessFetch({
+  const response = await exnessFetch<unknown>({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET",
     pathWithQuery: `/v1/history/accounts/${encodeURIComponent(creds.accountId.trim())}/deals?${historyQuery(range)}`,
   });
+  return validateHistoryPage<DealHistoryRecord>(response, "deal");
 }
