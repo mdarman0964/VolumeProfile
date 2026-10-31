@@ -984,6 +984,29 @@ export function Terminal() {
                   {liveArmed ? "Disarm live" : "Arm live"}
                 </button>
               </div>
+              {debugOpen ? (
+                <div className="mt-3 rounded-lg border border-line p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold">API diagnostics · latest 30 requests</p>
+                    <button type="button" className="btn h-8 px-2 text-xs" onClick={() => setApiDiagnostics([])}>Clear</button>
+                  </div>
+                  <p className="mt-1 text-xs text-muted">Credentials are not displayed. Request path, HTTP status, response details and duration are recorded locally.</p>
+                  {apiDiagnostics.length ? (
+                    <ul className="mt-2 space-y-2">
+                      {apiDiagnostics.map((item, index) => (
+                        <li key={item.at + item.path + index} className="rounded border border-line p-2 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 font-mono">
+                            <span>{item.method} {item.path}</span>
+                            <span className={item.ok ? "text-up" : "text-down"}>{String(item.status)} · {item.durationMs} ms</span>
+                          </div>
+                          <p className="mt-1 break-words text-muted">{item.detail}</p>
+                          <p className="mt-1 text-[10px] text-muted">{new Date(item.at).toLocaleString()}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="mt-2 text-xs text-muted">No requests recorded. Tap Connect to collect diagnostics.</p>}
+                </div>
+              ) : null}
               <div className="mt-4 border-t border-line pt-3">
                 <p className="mb-2 text-xs font-semibold text-muted">New pending order</p>
                 <div className="grid grid-cols-2 gap-2">
