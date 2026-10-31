@@ -195,6 +195,15 @@ export type Conditions = {
 };
 
 export type Snapshot = {
+  orders?: Array<{
+    order_id?: string;
+    order_type?: string;
+    state?: string;
+    direction?: string;
+    instrument?: string;
+    price?: string;
+    volume?: string;
+  }>;
   positions?: Array<{
     position_id?: string;
     direction?: string;

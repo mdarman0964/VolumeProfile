@@ -5,6 +5,7 @@ import {
   pullCandles,
   placeMarket,
   closePosition,
+  cancelOrder,
   readOperation,
   type Creds,
   type Snapshot,
@@ -49,6 +50,7 @@ type Broker = {
   volStep: number;
   volMax: number;
   positions: Array<{ id: string; side: string; volume: string; price: string; instrument: string }>;
+  orders: Array<{ id: string; side: string; volume: string; price: string; instrument: string; type: string }>;
 };
 
 const IDLE_BROKER: Broker = {
@@ -70,6 +72,7 @@ const IDLE_BROKER: Broker = {
   volStep: 0.01,
   volMax: 50,
   positions: [],
+  orders: [],
 };
 
 function loadSettings(): Settings {
@@ -126,6 +129,19 @@ function mapSnapshot(snapshot: Snapshot): Broker["positions"] {
       volume: position.volume ?? "",
       price: position.open_price ?? "",
       instrument: position.instrument ?? "",
+    }));
+}
+
+function mapOrders(snapshot: Snapshot): Broker["orders"] {
+  return (snapshot.orders ?? [])
+    .filter((order) => !order.state || order.state === "placed" || order.state === "pending")
+    .map((order) => ({
+      id: order.order_id ?? "",
+      side: order.direction ?? "",
+      volume: order.volume ?? "",
+      price: order.price ?? "",
+      instrument: order.instrument ?? "",
+      type: order.order_type ?? "pending",
     }));
 }
 
@@ -247,6 +263,7 @@ export function Terminal() {
     try {
       const result = await pullAccount(credsRef.current);
       const positions = mapSnapshot(result.snapshot);
+      const orders = mapOrders(result.snapshot);
       const next: Broker = {
         phase: "ready",
         detail: "Connected. Candles and orders stay in this browser.",
@@ -266,6 +283,7 @@ export function Terminal() {
         volStep: Number(result.conditions.volume_step || 0.01),
         volMax: Number(result.conditions.volume_max || 50),
         positions,
+        orders,
       };
       brokerRef.current = next;
       setBroker(next);
@@ -346,6 +364,36 @@ export function Terminal() {
     }
   };
 
+  const cancelPendingOrder = async (orderId: string) => {
+    const link = brokerRef.current;
+    if (!link.access || link.phase !== "ready" || !orderId) return;
+    if (link.tradeMode === "trading_disabled") {
+      setLiveNote("Trading is disabled on this account; pending orders cannot be cancelled through this API.");
+      return;
+    }
+    if (!window.confirm(`Cancel Exness pending order ${orderId}?`)) return;
+    setLiveNote(`Sending cancellation for order ${orderId}…`);
+    try {
+      const ack = await cancelOrder(credsRef.current, link.access, orderId);
+      if (ack.operation_id) {
+        setLiveNote(`Cancellation accepted · operation ${ack.operation_id}. Waiting for final status…`);
+        window.setTimeout(async () => {
+          try {
+            const status = await readOperation(credsRef.current, link.access, ack.operation_id || "");
+            setLiveNote(`Cancel operation ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            if (status.status === "confirmed") await connect();
+          } catch {
+            setLiveNote(`Cancel operation ${ack.operation_id} is pending; reconnect to reconcile orders.`);
+          }
+        }, 1500);
+      } else {
+        setLiveNote("Cancellation accepted. Refresh the account to reconcile orders.");
+      }
+    } catch (error) {
+      setLiveNote(error instanceof Error ? error.message : "Order cancellation failed.");
+    }
+  };
+
   const sendLive = async (side: Side, candle: Candle) => {
     const link = brokerRef.current;
     const spec = settingsRef.current;
@@ -414,6 +462,7 @@ export function Terminal() {
           equity: result.snapshot.account_state?.equity || current.equity,
           margin: result.snapshot.account_state?.used_margin || current.margin,
           positions,
+          orders: mapOrders(result.snapshot),
           detail: current.detail,
         }));
         const rows = await pullCandles(credsRef.current, brokerRef.current.access, 80);
@@ -666,6 +715,26 @@ export function Terminal() {
                     </li>
                   ))}
                 </ul>
+              ) : null}
+              {broker.orders.length ? (
+                <div className="mt-4 border-t border-line pt-3">
+                  <p className="mb-2 text-xs font-semibold text-muted">Pending orders</p>
+                  <ul className="space-y-2 text-sm">
+                    {broker.orders.map((order) => (
+                      <li key={order.id} className="flex items-center justify-between gap-2 font-mono">
+                        <span className="min-w-0">{order.instrument} {order.side} {order.type} · {order.volume} @ {order.price}</span>
+                        <button
+                          type="button"
+                          className="btn h-9 shrink-0 border-down px-2 text-down"
+                          onClick={() => void cancelPendingOrder(order.id)}
+                          disabled={!order.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}
+                        >
+                          Cancel
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
             </section>
           </aside>
