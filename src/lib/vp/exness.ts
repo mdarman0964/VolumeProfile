@@ -8,10 +8,16 @@ export type Creds = {
   instrument: string;
 };
 
-export type ExnessError = {
+export class ExnessApiError extends Error {
   status: number;
-  message: string;
-};
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = "ExnessApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
 
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -113,14 +119,16 @@ function originOf(raw: string): string {
   return url.origin;
 }
 
-async function readError(response: Response): Promise<string> {
-  const text = await response.text();
-  if (!text) return `Request failed (${response.status}).`;
+async function readError(response: Response): Promise<ExnessApiError> {
+  const raw = await response.text();
+  if (!raw) return new ExnessApiError(response.status, `Exness API request failed (HTTP ${response.status}).`);
   try {
-    const json = JSON.parse(text) as { error_message?: string; message?: string };
-    return json.error_message || json.message || text.slice(0, 180);
+    const json = JSON.parse(raw) as { code?: string | number; error_code?: string; error_message?: string; message?: string; details?: unknown };
+    const code = json.error_code || (json.code == null ? undefined : String(json.code));
+    const message = json.error_message || json.message || `Exness API request failed (HTTP ${response.status}).`;
+    return new ExnessApiError(response.status, code ? `${code}: ${message}` : message, code);
   } catch {
-    return text.slice(0, 180);
+    return new ExnessApiError(response.status, raw.slice(0, 240));
   }
 }
 
@@ -154,8 +162,19 @@ export async function exnessFetch<T>(opts: {
   } catch {
     throw new Error("Browser could not reach that host. Paper desk is still running.");
   }
-  if (!response.ok) throw new Error(await readError(response));
-  return (await response.json()) as T;
+  if (!response.ok) throw await readError(response);
+  const responseText = await response.text();
+  if (!responseText.trim()) return undefined as T;
+  try {
+    const parsed: unknown = JSON.parse(responseText);
+    if (parsed === null || typeof parsed !== "object") {
+      throw new Error("Unexpected response shape.");
+    }
+    return parsed as T;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Invalid JSON response.";
+    throw new ExnessApiError(response.status, `Exness API returned an invalid JSON response: ${detail}`);
+  }
 }
 
 export type AccessPoint = { access_point: string; account_id: string };
@@ -210,6 +229,8 @@ export type Snapshot = {
     instrument?: string;
     volume?: string;
     open_price?: string;
+    stop_loss_price?: string | null;
+    take_profit_price?: string | null;
     state?: string;
   }>;
   account_state?: {
@@ -315,7 +336,7 @@ export async function readOperation(
   creds: Creds,
   access: string,
   operationId: string,
-): Promise<{ status?: string; error_message?: string }> {
+): Promise<OperationStatus> {
   return exnessFetch({
     base: access,
     apiKey: creds.apiKey,
@@ -344,8 +365,8 @@ export type TradingSnapshot = Snapshot & {
     instrument?: string;
     price?: string;
     volume?: string;
-    stop_loss_price?: string;
-    take_profit_price?: string;
+    stop_loss_price?: string | null;
+    take_profit_price?: string | null;
     create_time?: string;
   }>;
 };
@@ -354,6 +375,56 @@ export type Ack = {
   operation_id?: string;
   client_request_id?: string;
   status: "accepted" | string;
+};
+
+export type OperationStatus = {
+  operation_id: string;
+  status: "pending" | "confirmed" | "rejected" | "failed";
+  client_request_id?: string;
+  error_code?: string;
+  error_message?: string;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type OrderHistoryRecord = {
+  event_time: string;
+  order: {
+    order_id: string;
+    order_type: string;
+    state: string;
+    direction?: string;
+    instrument?: string;
+    price?: string;
+    volume?: string;
+    stop_loss_price?: string | null;
+    take_profit_price?: string | null;
+    create_time?: string;
+  };
+};
+
+export type DealHistoryRecord = {
+  event_time: string;
+  deal: {
+    deal_id: string;
+    order_id?: string;
+    position_id?: string;
+    type: string;
+    direction?: string;
+    instrument?: string;
+    volume?: string;
+    price?: string;
+    profit?: string;
+    commission?: string;
+    create_time?: string;
+  };
+};
+
+export type HistoryPage<T> = {
+  items: T[];
+  next_cursor?: string;
+  has_more?: boolean;
+  range?: { from?: string; to?: string };
 };
 
 function accountPath(creds: Creds, suffix: string): string {
@@ -449,18 +520,21 @@ export function closePosition(
   });
 }
 
-export type HistoryPage<T> = { items?: T[]; next_cursor?: string; has_more?: boolean };
 export type HistoryRange = { from?: string; to?: string; cursor?: string; limit?: number; instrument?: string };
 
 function historyQuery(range: HistoryRange): string {
   if (range.cursor && (range.from || range.to || range.instrument)) {
     throw new Error("History cursor cannot be combined with date or instrument filters.");
   }
+  if (!range.cursor && !range.from) throw new Error("History start time is required.");
+  if (range.from && Number.isNaN(Date.parse(range.from))) throw new Error("History start time is invalid.");
+  if (range.to && (Number.isNaN(Date.parse(range.to)) || Date.parse(range.to) <= Date.parse(range.from || ""))) {
+    throw new Error("History end time must be later than the start time.");
+  }
   const params = new URLSearchParams();
   if (range.cursor) params.set("cursor", range.cursor);
   else {
-    if (!range.from) throw new Error("History start time is required.");
-    params.set("from", range.from);
+    params.set("from", range.from!);
     if (range.to) params.set("to", range.to);
     if (range.instrument) params.set("instrument", range.instrument);
   }
@@ -473,7 +547,7 @@ function historyQuery(range: HistoryRange): string {
 /** Historical orders only; active orders must be read from the trading snapshot. */
 export function pullOrderHistory(
   creds: Creds, access: string, range: HistoryRange,
-): Promise<HistoryPage<Record<string, unknown>>> {
+): Promise<HistoryPage<OrderHistoryRecord>> {
   return exnessFetch({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET",
@@ -484,7 +558,7 @@ export function pullOrderHistory(
 /** Historical deals, including close/open and balance-related activity. */
 export function pullDealHistory(
   creds: Creds, access: string, range: HistoryRange,
-): Promise<HistoryPage<Record<string, unknown>>> {
+): Promise<HistoryPage<DealHistoryRecord>> {
   return exnessFetch({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "GET",

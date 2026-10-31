@@ -7,7 +7,13 @@ import {
   closePosition,
   cancelOrder,
   placePendingOrder,
+  modifyOrder,
+  pullOrderHistory,
+  pullDealHistory,
   readOperation,
+  type HistoryPage,
+  type OrderHistoryRecord,
+  type DealHistoryRecord,
   type Creds,
   type Snapshot,
 } from "@/lib/vp/exness";
@@ -50,8 +56,8 @@ type Broker = {
   volMin: number;
   volStep: number;
   volMax: number;
-  positions: Array<{ id: string; side: string; volume: string; price: string; instrument: string }>;
-  orders: Array<{ id: string; side: string; volume: string; price: string; instrument: string; type: string }>;
+  positions: Array<{ id: string; side: string; volume: string; price: string; instrument: string; stopLoss: string; takeProfit: string }>;
+  orders: Array<{ id: string; positionId: string; side: string; volume: string; price: string; instrument: string; type: string; stopLoss: string; takeProfit: string }>;
 };
 
 const IDLE_BROKER: Broker = {
@@ -130,6 +136,8 @@ function mapSnapshot(snapshot: Snapshot): Broker["positions"] {
       volume: position.volume ?? "",
       price: position.open_price ?? "",
       instrument: position.instrument ?? "",
+      stopLoss: position.stop_loss_price ?? "",
+      takeProfit: position.take_profit_price ?? "",
     }));
 }
 
@@ -142,7 +150,10 @@ function mapOrders(snapshot: Snapshot): Broker["orders"] {
       volume: order.volume ?? "",
       price: order.price ?? "",
       instrument: order.instrument ?? "",
+      positionId: order.position_id ?? "",
       type: order.order_type ?? "pending",
+      stopLoss: order.stop_loss_price ?? "",
+      takeProfit: order.take_profit_price ?? "",
     }));
 }
 
@@ -175,6 +186,28 @@ export function Terminal() {
   const [pendingPrice, setPendingPrice] = useState("");
   const [pendingSl, setPendingSl] = useState("");
   const [pendingTp, setPendingTp] = useState("");
+  const [editingOrderId, setEditingOrderId] = useState<string | null>(null);
+  const [editOrderPrice, setEditOrderPrice] = useState("");
+  const [editOrderSl, setEditOrderSl] = useState("");
+  const [editOrderTp, setEditOrderTp] = useState("");
+  const [editingPositionId, setEditingPositionId] = useState<string | null>(null);
+  const [positionSl, setPositionSl] = useState("");
+  const [positionTp, setPositionTp] = useState("");
+  const [historyTab, setHistoryTab] = useState<"orders" | "deals">("orders");
+  const [historyFrom, setHistoryFrom] = useState(() => {
+    const d = new Date(Date.now() - 7 * 86400000);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  });
+  const [historyTo, setHistoryTo] = useState(() => {
+    const d = new Date(Date.now() - 60000);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  });
+  const [historyOrders, setHistoryOrders] = useState<OrderHistoryRecord[]>([]);
+  const [historyDeals, setHistoryDeals] = useState<DealHistoryRecord[]>([]);
+  const [historyCursor, setHistoryCursor] = useState<string | undefined>();
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState("");
 
   const tapeRef = useRef(tape);
   const sessionRef = useRef(session);
@@ -433,6 +466,140 @@ export function Terminal() {
       }
     } catch (error) {
       setLiveNote(error instanceof Error ? error.message : "Pending order request failed.");
+    }
+  };
+
+  const saveOrderChanges = async (order: Broker["orders"][number]) => {
+    const link = brokerRef.current;
+    if (!link.access || link.phase !== "ready" || !order.id) return;
+    if (link.tradeMode === "trading_disabled" || link.accountStatus === "close_only") {
+      setLiveNote("This account cannot modify active orders.");
+      return;
+    }
+    const digits = link.digits;
+    const price = Number(editOrderPrice);
+    if (!Number.isFinite(price) || price <= 0) {
+      setLiveNote("A valid order price is required.");
+      return;
+    }
+    const parseOptional = (value: string) => value.trim() ? (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value).toFixed(digits) : undefined) : null;
+    const sl = parseOptional(editOrderSl);
+    const tp = parseOptional(editOrderTp);
+    if (sl === undefined || tp === undefined) {
+      setLiveNote("SL and TP must be positive prices or blank to remove.");
+      return;
+    }
+    setLiveNote(`Updating order ${order.id}…`);
+    try {
+      const ack = await modifyOrder(credsRef.current, link.access, order.id, {
+        price: price.toFixed(digits),
+        stop_loss_price: sl,
+        take_profit_price: tp,
+      });
+      setLiveNote(ack.operation_id ? `Order modification accepted · operation ${ack.operation_id}. Waiting for final status…` : "Order modification accepted; refresh to reconcile.");
+      if (ack.operation_id) {
+        window.setTimeout(async () => {
+          try {
+            const status = await readOperation(credsRef.current, link.access, ack.operation_id!);
+            setLiveNote(`Order modification ${status.status}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            if (status.status === "confirmed") await connect();
+          } catch (error) {
+            setLiveNote(error instanceof Error ? error.message : "Could not confirm order modification; refresh account state.");
+          }
+        }, 1500);
+      }
+      setEditingOrderId(null);
+    } catch (error) {
+      setLiveNote(error instanceof Error ? error.message : "Order modification failed.");
+    }
+  };
+
+  const savePositionProtection = async (position: Broker["positions"][number]) => {
+    const link = brokerRef.current;
+    if (!link.access || link.phase !== "ready" || !position.id) return;
+    if (link.tradeMode === "trading_disabled" || link.accountStatus === "close_only") {
+      setLiveNote("This account cannot modify position protection.");
+      return;
+    }
+    const digits = link.digits;
+    const parseOptional = (value: string) => value.trim() ? (Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value).toFixed(digits) : undefined) : null;
+    const sl = parseOptional(positionSl);
+    const tp = parseOptional(positionTp);
+    if (sl === undefined || tp === undefined) {
+      setLiveNote("SL and TP must be positive prices or blank.");
+      return;
+    }
+    const linkedSltp = link.orders.find((order) => order.positionId === position.id && order.type === "sltp");
+    setLiveNote(`Updating protection for position ${position.id}…`);
+    try {
+      let ack;
+      if (linkedSltp?.id) {
+        ack = await modifyOrder(credsRef.current, link.access, linkedSltp.id, {
+          stop_loss_price: sl,
+          take_profit_price: tp,
+        });
+      } else {
+        if (sl === null && tp === null) {
+          setLiveNote("This position has no SLTP order to remove.");
+          return;
+        }
+        const body: Record<string, string> = { type: "sltp", position_id: position.id };
+        if (sl !== null) body.stop_loss_price = sl;
+        if (tp !== null) body.take_profit_price = tp;
+        ack = await placePendingOrder(credsRef.current, link.access, body);
+      }
+      setLiveNote(ack.operation_id ? `Position protection accepted · operation ${ack.operation_id}. Waiting for final status…` : "Position protection accepted; refresh to reconcile.");
+      if (ack.operation_id) {
+        window.setTimeout(async () => {
+          try {
+            const status = await readOperation(credsRef.current, link.access, ack.operation_id!);
+            setLiveNote(`Position SL/TP ${status.status}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            if (status.status === "confirmed") await connect();
+          } catch (error) {
+            setLiveNote(error instanceof Error ? error.message : "Could not confirm SL/TP update; refresh account state.");
+          }
+        }, 1500);
+      }
+      setEditingPositionId(null);
+    } catch (error) {
+      setLiveNote(error instanceof Error ? error.message : "Position SL/TP update failed.");
+    }
+  };
+
+  const loadHistory = async (cursor?: string) => {
+    const link = brokerRef.current;
+    if (!link.access || link.phase !== "ready") return;
+    if (link.tradeMode === "trading_disabled") {
+      setHistoryError("History is unavailable while trading is disabled on this account.");
+      return;
+    }
+    const from = new Date(historyFrom);
+    const to = new Date(historyTo);
+    if (!cursor && (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || to <= from)) {
+      setHistoryError("Choose a valid UTC-convertible date range; end must be after start.");
+      return;
+    }
+    setHistoryBusy(true);
+    setHistoryError("");
+    try {
+      const range = cursor ? { cursor, limit: 100 } : {
+        from: from.toISOString(), to: to.toISOString(), instrument: credsRef.current.instrument.trim(), limit: 100,
+      };
+      if (historyTab === "orders") {
+        const page = await pullOrderHistory(credsRef.current, link.access, range);
+        setHistoryOrders((current) => cursor ? [...current, ...page.items] : page.items);
+        setHistoryCursor(page.next_cursor);
+        setHistoryHasMore(Boolean(page.has_more && page.next_cursor));
+      } else {
+        const page = await pullDealHistory(credsRef.current, link.access, range);
+        setHistoryDeals((current) => cursor ? [...current, ...page.items] : page.items);
+        setHistoryCursor(page.next_cursor);
+        setHistoryHasMore(Boolean(page.has_more && page.next_cursor));
+      }
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "History request failed.");
+    } finally {
+      setHistoryBusy(false);
     }
   };
 
@@ -792,44 +959,93 @@ export function Terminal() {
                 </p>
               ) : null}
               {broker.positions.length ? (
-                <ul className="mt-3 space-y-2 text-sm">
+                <ul className="mt-3 space-y-3 text-sm">
                   {broker.positions.map((position) => (
-                    <li key={position.id} className="flex items-center justify-between gap-2 font-mono">
-                      <span className="min-w-0">
-                        {position.instrument} {position.side} · {position.volume} @ {position.price}
-                      </span>
-                      <button
-                        type="button"
-                        className="btn h-9 shrink-0 border-down px-2 text-down"
-                        onClick={() => void closeBrokerPosition(position.id)}
-                        disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}
-                      >
-                        Close
-                      </button>
+                    <li key={position.id} className="rounded-lg border border-line p-2">
+                      <div className="flex items-center justify-between gap-2 font-mono">
+                        <span className="min-w-0">{position.instrument} {position.side} · {position.volume} @ {position.price}</span>
+                        <div className="flex shrink-0 gap-1">
+                          <button type="button" className="btn h-9 px-2" onClick={() => {
+                            setEditingPositionId(editingPositionId === position.id ? null : position.id);
+                            setPositionSl(position.stopLoss);
+                            setPositionTp(position.takeProfit);
+                          }} disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled" || broker.accountStatus === "close_only"}>SL/TP</button>
+                          <button type="button" className="btn h-9 border-down px-2 text-down" onClick={() => void closeBrokerPosition(position.id)} disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}>Close</button>
+                        </div>
+                      </div>
+                      {editingPositionId === position.id ? (
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <TextField label="Stop Loss (blank removes)" value={positionSl} onChange={setPositionSl} placeholder="SL price" />
+                          <TextField label="Take Profit (blank removes)" value={positionTp} onChange={setPositionTp} placeholder="TP price" />
+                          <button type="button" className="btn-neon h-10 col-span-2" onClick={() => void savePositionProtection(position)}>Save position SL/TP</button>
+                        </div>
+                      ) : null}
                     </li>
                   ))}
                 </ul>
               ) : null}
               {broker.orders.length ? (
                 <div className="mt-4 border-t border-line pt-3">
-                  <p className="mb-2 text-xs font-semibold text-muted">Pending orders</p>
-                  <ul className="space-y-2 text-sm">
+                  <p className="mb-2 text-xs font-semibold text-muted">Active orders</p>
+                  <ul className="space-y-3 text-sm">
                     {broker.orders.map((order) => (
-                      <li key={order.id} className="flex items-center justify-between gap-2 font-mono">
-                        <span className="min-w-0">{order.instrument} {order.side} {order.type} · {order.volume} @ {order.price}</span>
-                        <button
-                          type="button"
-                          className="btn h-9 shrink-0 border-down px-2 text-down"
-                          onClick={() => void cancelPendingOrder(order.id)}
-                          disabled={!order.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}
-                        >
-                          Cancel
-                        </button>
+                      <li key={order.id} className="rounded-lg border border-line p-2">
+                        <div className="flex items-center justify-between gap-2 font-mono">
+                          <span className="min-w-0">{order.instrument || "Position"} {order.side} {order.type} · {order.volume || "—"} @ {order.price || "—"}</span>
+                          <div className="flex shrink-0 gap-1">
+                            {order.type !== "sltp" ? <button type="button" className="btn h-9 px-2" onClick={() => {
+                              setEditingOrderId(editingOrderId === order.id ? null : order.id);
+                              setEditOrderPrice(order.price);
+                              setEditOrderSl(order.stopLoss);
+                              setEditOrderTp(order.takeProfit);
+                            }} disabled={!order.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled" || broker.accountStatus === "close_only"}>Edit</button> : null}
+                            {order.type !== "sltp" ? <button type="button" className="btn h-9 border-down px-2 text-down" onClick={() => void cancelPendingOrder(order.id)} disabled={!order.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}>Cancel</button> : null}
+                          </div>
+                        </div>
+                        {editingOrderId === order.id ? (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <TextField label="Order price" value={editOrderPrice} onChange={setEditOrderPrice} placeholder="Price" />
+                            <TextField label="Stop Loss (blank removes)" value={editOrderSl} onChange={setEditOrderSl} placeholder="SL" />
+                            <TextField label="Take Profit (blank removes)" value={editOrderTp} onChange={setEditOrderTp} placeholder="TP" />
+                            <button type="button" className="btn-neon h-10" onClick={() => void saveOrderChanges(order)}>Save changes</button>
+                          </div>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
                 </div>
               ) : null}
+              <div className="mt-4 border-t border-line pt-3">
+                <div className="flex gap-2">
+                  <button type="button" className={historyTab === "orders" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("orders"); setHistoryCursor(undefined); }}>Order history</button>
+                  <button type="button" className={historyTab === "deals" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("deals"); setHistoryCursor(undefined); }}>Deal history</button>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="text-xs text-muted">From <input className="mt-1 h-10 w-full rounded-lg border border-line bg-bg px-2 text-fg" type="datetime-local" value={historyFrom} onChange={(e) => setHistoryFrom(e.target.value)} /></label>
+                  <label className="text-xs text-muted">To <input className="mt-1 h-10 w-full rounded-lg border border-line bg-bg px-2 text-fg" type="datetime-local" value={historyTo} onChange={(e) => setHistoryTo(e.target.value)} /></label>
+                </div>
+                <button type="button" className="btn h-10 mt-2 w-full" onClick={() => {
+                  setHistoryCursor(undefined);
+                  setHistoryOrders([]);
+                  setHistoryDeals([]);
+                  void loadHistory();
+                }} disabled={historyBusy || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}>{historyBusy ? "Loading history…" : "Load history"}</button>
+                {historyError ? <p className="mt-2 text-xs text-down">{historyError}</p> : null}
+                <ul className="mt-2 space-y-2 text-xs">
+                  {historyTab === "orders" ? historyOrders.map((item) => (
+                    <li key={item.order.order_id} className="rounded border border-line p-2">
+                      <div className="font-mono">{item.order.instrument || "—"} {item.order.direction || ""} {item.order.order_type} · {item.order.state}</div>
+                      <div className="text-muted">{new Date(item.event_time).toLocaleString()} · {item.order.volume || "—"} @ {item.order.price || "—"} · #{item.order.order_id}</div>
+                    </li>
+                  )) : historyDeals.map((item) => (
+                    <li key={item.deal.deal_id} className="rounded border border-line p-2">
+                      <div className="font-mono">{item.deal.instrument || item.deal.type} {item.deal.direction || ""} · {item.deal.type}</div>
+                      <div className="text-muted">{new Date(item.event_time).toLocaleString()} · {item.deal.volume || "—"} @ {item.deal.price || "—"} · P/L {item.deal.profit || "—"} · #{item.deal.deal_id}</div>
+                    </li>
+                  ))}
+                </ul>
+                {historyHasMore ? <button type="button" className="btn h-10 mt-2 w-full" onClick={() => historyCursor && void loadHistory(historyCursor)} disabled={historyBusy}>Load next page</button> : null}
+              </div>
             </section>
           </aside>
 
