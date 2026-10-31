@@ -1,0 +1,80 @@
+name: Android Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: "HTTPS URL of the deployed VolumeProfile web app"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-debug-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-debug-apk:
+    name: Build VolumeProfile debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      APP_URL: ${{ github.event.inputs.app_url || vars.APP_URL }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Validate deployed app URL
+        shell: bash
+        run: |
+          if [[ -z "${APP_URL}" ]]; then
+            echo "::error::APP_URL is missing. Add the repository Actions variable APP_URL, or run this workflow manually and provide app_url."
+            exit 1
+          fi
+          node --input-type=module -e '
+            const url = new URL(process.env.APP_URL);
+            if (url.protocol !== "https:") {
+              throw new Error("APP_URL must use HTTPS.");
+            }
+            console.log("Building WebView for", url.origin);
+          '
+
+      - name: Install Capacitor Android toolchain
+        run: npm install --no-save --no-package-lock --no-audit --no-fund @capacitor/core@^8 @capacitor/cli@^8 @capacitor/android@^8
+
+      - name: Generate Android project
+        run: npx cap add android
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VolumeProfile-android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
