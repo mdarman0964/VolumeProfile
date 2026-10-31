@@ -4,6 +4,7 @@ import {
   pullAccount,
   pullCandles,
   placeMarket,
+  closePosition,
   readOperation,
   type Creds,
   type Snapshot,
@@ -315,6 +316,36 @@ export function Terminal() {
     }
   };
 
+  const closeBrokerPosition = async (positionId: string) => {
+    const link = brokerRef.current;
+    if (!link.access || link.phase !== "ready") return;
+    if (link.tradeMode === "trading_disabled") {
+      setLiveNote("Exness account trading is disabled; position close is unavailable through this API.");
+      return;
+    }
+    if (!window.confirm(`Close Exness position ${positionId} at market?`)) return;
+    setLiveNote(`Sending close request for ${positionId}…`);
+    try {
+      const ack = await closePosition(credsRef.current, link.access, positionId);
+      if (ack.operation_id) {
+        setLiveNote(`Close accepted · operation ${ack.operation_id}. Waiting for final execution status…`);
+        window.setTimeout(async () => {
+          try {
+            const status = await readOperation(credsRef.current, link.access, ack.operation_id || "");
+            setLiveNote(`Close operation ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            if (status.status === "confirmed") await connect();
+          } catch {
+            setLiveNote(`Close operation ${ack.operation_id} is pending; reconnect to reconcile account state.`);
+          }
+        }, 1500);
+      } else {
+        setLiveNote("Close request accepted. Refresh the account to reconcile current positions.");
+      }
+    } catch (error) {
+      setLiveNote(error instanceof Error ? error.message : "Position close request failed.");
+    }
+  };
+
   const sendLive = async (side: Side, candle: Candle) => {
     const link = brokerRef.current;
     const spec = settingsRef.current;
@@ -621,12 +652,17 @@ export function Terminal() {
                 <ul className="mt-3 space-y-2 text-sm">
                   {broker.positions.map((position) => (
                     <li key={position.id} className="flex items-center justify-between gap-2 font-mono">
-                      <span>
-                        {position.instrument} {position.side}
+                      <span className="min-w-0">
+                        {position.instrument} {position.side} · {position.volume} @ {position.price}
                       </span>
-                      <span>
-                        {position.volume} @ {position.price}
-                      </span>
+                      <button
+                        type="button"
+                        className="btn h-9 shrink-0 border-down px-2 text-down"
+                        onClick={() => void closeBrokerPosition(position.id)}
+                        disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}
+                      >
+                        Close
+                      </button>
                     </li>
                   ))}
                 </ul>
