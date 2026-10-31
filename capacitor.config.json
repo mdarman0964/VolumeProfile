@@ -1,0 +1,13 @@
+{
+  "appId": "com.mdarman0964.vela",
+  "appName": "VELA",
+  "webDir": "dist-android",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}
