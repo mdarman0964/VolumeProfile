@@ -1,0 +1,62 @@
+name: Android standalone APK
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "android-web/**"
+      - "src/components/desk/**"
+      - "src/lib/vp/**"
+      - "src/styles.css"
+      - "vite.android.config.ts"
+      - "capacitor.config.json"
+      - ".github/workflows/android-standalone.yml"
+      - "package.json"
+      - "package-lock.json"
+
+permissions:
+  contents: read
+
+jobs:
+  build-debug-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build local web bundle
+        run: npm run build:android
+
+      - name: Generate native Android project
+        run: npx cap add android
+
+      - name: Sync local bundle to Android
+        run: npx cap sync android
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VELA-standalone-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
