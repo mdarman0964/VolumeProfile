@@ -392,7 +392,7 @@ export function modifyOrder(
   changes: { price?: string; stop_loss_price?: string | null; take_profit_price?: string | null; comment?: string },
   requestId?: string,
 ): Promise<Ack> {
-  if (!/^\\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
+  if (!/^\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
   if (!Object.keys(changes).some((key) => key !== "comment")) throw new Error("At least one order price field must change.");
   return exnessFetch({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
@@ -409,7 +409,7 @@ export function cancelOrder(
   orderId: string,
   requestId?: string,
 ): Promise<Ack> {
-  if (!/^\\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
+  if (!/^\d{1,20}$/.test(orderId)) throw new Error("Invalid order ID.");
   return exnessFetch({
     base: access, apiKey: creds.apiKey, privateKey: creds.privateKey,
     method: "DELETE",
@@ -426,7 +426,7 @@ export function closePosition(
   options: { volume?: string; price?: string; deviation?: string } = {},
   requestId?: string,
 ): Promise<Ack> {
-  if (!/^\\d{1,20}$/.test(positionId)) throw new Error("Invalid position ID.");
+  if (!/^\d{1,20}$/.test(positionId)) throw new Error("Invalid position ID.");
   const params = new URLSearchParams();
   if (options.volume !== undefined) params.set("volume", options.volume);
   if (options.price !== undefined) params.set("price", options.price);
