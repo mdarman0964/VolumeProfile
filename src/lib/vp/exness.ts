@@ -190,24 +190,6 @@ export async function exnessFetch<T>(opts: {
   }
 }
 
-export type AccessPoint = { access_point: string; account_id: string };
-
-export async function discoverAccessPoint(creds: Creds): Promise<AccessPoint> {
-  const path = `/v1/trading/access-point?account_id=${encodeURIComponent(creds.accountId.trim())}`;
-  const response = await exnessFetch<unknown>({
-    base: creds.gateway,
-    apiKey: creds.apiKey,
-    privateKey: creds.privateKey,
-    method: "GET",
-    pathWithQuery: path,
-  });
-  const record = expectRecord(response, "access point");
-  return {
-    access_point: expectStringField(record, "access_point", "access point"),
-    account_id: expectStringField(record, "account_id", "access point"),
-  };
-}
-
 export type AccountDetails = {
   account_id?: string;
   account_name?: string;
