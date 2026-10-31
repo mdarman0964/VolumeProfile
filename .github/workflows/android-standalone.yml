@@ -38,7 +38,7 @@ jobs:
           java-version: "21"
 
       - name: Install project dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Install Capacitor Android toolchain
         run: npm install --no-save --package-lock=false @capacitor/core@7 @capacitor/android@7 @capacitor/cli@7
