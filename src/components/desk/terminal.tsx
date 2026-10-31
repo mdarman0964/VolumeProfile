@@ -390,7 +390,7 @@ export function Terminal() {
         window.setTimeout(async () => {
           try {
             const status = await readOperation(credsRef.current, link.access, ack.operation_id || "");
-            setLiveNote(`Close operation ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            setLiveNote(`Close operation ${ack.operation_id}: ${status.status || "pending"}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
             if (status.status === "confirmed") await connect();
           } catch {
             setLiveNote(`Close operation ${ack.operation_id} is pending; reconnect to reconcile account state.`);
@@ -455,7 +455,7 @@ export function Terminal() {
         window.setTimeout(async () => {
           try {
             const status = await readOperation(spec, link.access, ack.operation_id || "");
-            setLiveNote(`Pending order ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            setLiveNote(`Pending order ${ack.operation_id}: ${status.status || "pending"}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
             if (status.status === "confirmed") await connect();
           } catch {
             setLiveNote(`Pending order operation ${ack.operation_id} is pending; reconnect to reconcile.`);
@@ -517,8 +517,8 @@ export function Terminal() {
   const savePositionProtection = async (position: Broker["positions"][number]) => {
     const link = brokerRef.current;
     if (!link.access || link.phase !== "ready" || !position.id) return;
-    if (link.tradeMode === "trading_disabled" || link.accountStatus === "close_only") {
-      setLiveNote("This account cannot modify position protection.");
+    if (link.tradeMode === "trading_disabled") {
+      setLiveNote("Trading is disabled; position protection cannot be changed.");
       return;
     }
     const digits = link.digits;
@@ -530,6 +530,10 @@ export function Terminal() {
       return;
     }
     const linkedSltp = link.orders.find((order) => order.positionId === position.id && order.type === "sltp");
+    if (link.accountStatus === "close_only" && linkedSltp) {
+      setLiveNote("This account is close-only; Exness does not allow modifying the existing SLTP order.");
+      return;
+    }
     setLiveNote(`Updating protection for position ${position.id}…`);
     try {
       let ack;
@@ -636,7 +640,7 @@ export function Terminal() {
         window.setTimeout(async () => {
           try {
             const status = await readOperation(credsRef.current, link.access, ack.operation_id || "");
-            setLiveNote(`Cancel operation ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            setLiveNote(`Cancel operation ${ack.operation_id}: ${status.status || "pending"}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
             if (status.status === "confirmed") await connect();
           } catch {
             setLiveNote(`Cancel operation ${ack.operation_id} is pending; reconnect to reconcile orders.`);
@@ -695,7 +699,7 @@ export function Terminal() {
         window.setTimeout(async () => {
           try {
             const status = await readOperation(credsRef.current, link.access, ack.operation_id || "");
-            setLiveNote(`${operation} · ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            setLiveNote(`${operation} · ${status.status || "pending"}${status.error_code ? ` · ${status.error_code}` : ""}${status.error_message ? ` · ${status.error_message}` : ""}`);
           } catch {
             setLiveNote(`${operation} is still pending.`);
           }
@@ -986,7 +990,7 @@ export function Terminal() {
                             setEditingPositionId(editingPositionId === position.id ? null : position.id);
                             setPositionSl(position.stopLoss);
                             setPositionTp(position.takeProfit);
-                          }} disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled" || broker.accountStatus === "close_only"}>SL/TP</button>
+                          }} disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled" || (broker.accountStatus === "close_only" && broker.orders.some((order) => order.positionId === position.id && order.type === "sltp"))}>SL/TP</button>
                           <button type="button" className="btn h-9 border-down px-2 text-down" onClick={() => void closeBrokerPosition(position.id)} disabled={!position.id || broker.phase !== "ready" || broker.tradeMode === "trading_disabled"}>Close</button>
                         </div>
                       </div>
@@ -1034,8 +1038,8 @@ export function Terminal() {
               ) : null}
               <div className="mt-4 border-t border-line pt-3">
                 <div className="flex gap-2">
-                  <button type="button" className={historyTab === "orders" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("orders"); setHistoryCursor(undefined); }}>Order history</button>
-                  <button type="button" className={historyTab === "deals" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("deals"); setHistoryCursor(undefined); }}>Deal history</button>
+                  <button type="button" className={historyTab === "orders" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("orders"); setHistoryCursor(undefined); setHistoryHasMore(false); setHistoryError(""); }}>Order history</button>
+                  <button type="button" className={historyTab === "deals" ? "btn-neon h-10 flex-1" : "btn h-10 flex-1"} onClick={() => { setHistoryTab("deals"); setHistoryCursor(undefined); setHistoryHasMore(false); setHistoryError(""); }}>Deal history</button>
                 </div>
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <label className="text-xs text-muted">From <input className="mt-1 h-10 w-full rounded-lg border border-line bg-bg px-2 text-fg" type="datetime-local" value={historyFrom} onChange={(e) => setHistoryFrom(e.target.value)} /></label>
