@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #07080d;
+  --color-surface: #10141d;
+  --color-fg: #e7eefc;
+  --color-muted: #8b98b0;
+  --color-line: #2a3348;
+  --color-neon: #3ee0ff;
+  --color-neon-ink: #041018;
+  --color-up: #3dffb0;
+  --color-down: #ff5b73;
+  --font-sans: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius-lg: 0.9rem;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  html {
+    color-scheme: dark;
+    background: var(--color-bg);
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+  }
+
+  ::placeholder {
+    color: var(--color-muted);
+  }
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 color-mix(in oklab, var(--color-fg) 7%, transparent);
+}
+
+.btn {
+  border: 1px solid var(--color-line);
+  border-radius: 0.7rem;
+  background: transparent;
+  color: var(--color-fg);
+  padding-inline: 0.8rem;
+  font-size: 0.85rem;
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btn-neon {
+  border: 0;
+  border-radius: 0.7rem;
+  background: var(--color-neon);
+  color: var(--color-neon-ink);
+  padding-inline: 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  box-shadow: 0 0 22px color-mix(in oklab, var(--color-neon) 28%, transparent);
+}
+
+.neon-text {
+  color: var(--color-neon);
+  text-shadow: 0 0 18px color-mix(in oklab, var(--color-neon) 55%, transparent);
+}
+
+.neon-mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  background: var(--color-neon);
+  box-shadow: 0 0 12px var(--color-neon);
+}
+
+.scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.scroll::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .neon-mark,
+  .neon-text,
+  .btn-neon {
+    box-shadow: none;
+    text-shadow: none;
+  }
+}
