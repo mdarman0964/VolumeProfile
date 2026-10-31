@@ -6,6 +6,7 @@ import {
   placeMarket,
   closePosition,
   cancelOrder,
+  placePendingOrder,
   readOperation,
   type Creds,
   type Snapshot,
@@ -168,6 +169,12 @@ export function Terminal() {
   const [broker, setBroker] = useState<Broker>(IDLE_BROKER);
   const [liveArmed, setLiveArmed] = useState(false);
   const [liveNote, setLiveNote] = useState("Live orders are off.");
+  const [pendingType, setPendingType] = useState<"limit" | "stop">("limit");
+  const [pendingSide, setPendingSide] = useState<Side>("buy");
+  const [pendingVolume, setPendingVolume] = useState("0.01");
+  const [pendingPrice, setPendingPrice] = useState("");
+  const [pendingSl, setPendingSl] = useState("");
+  const [pendingTp, setPendingTp] = useState("");
 
   const tapeRef = useRef(tape);
   const sessionRef = useRef(session);
@@ -361,6 +368,71 @@ export function Terminal() {
       }
     } catch (error) {
       setLiveNote(error instanceof Error ? error.message : "Position close request failed.");
+    }
+  };
+
+  const submitPendingOrder = async () => {
+    const link = brokerRef.current;
+    const spec = credsRef.current;
+    if (!link.access || link.phase !== "ready") return;
+    if (link.tradeMode === "trading_disabled" || link.accountStatus === "close_only") {
+      setLiveNote("This account is not permitted to open a pending order.");
+      return;
+    }
+    const volume = Number(pendingVolume);
+    const price = Number(pendingPrice);
+    const step = link.volStep || 0.01;
+    if (!Number.isFinite(volume) || volume < link.volMin || volume > link.volMax ||
+        Math.abs((volume - link.volMin) / step - Math.round((volume - link.volMin) / step)) > 1e-7) {
+      setLiveNote(`Volume must be between ${link.volMin} and ${link.volMax}, using step ${step}.`);
+      return;
+    }
+    if (!Number.isFinite(price) || price <= 0) {
+      setLiveNote("Enter a valid pending order price.");
+      return;
+    }
+    const digits = link.digits;
+    const body: Record<string, string> = {
+      instrument: spec.instrument.trim(),
+      side: pendingSide,
+      type: pendingType,
+      volume: pendingVolume,
+      price: price.toFixed(digits),
+      comment: "VELA pending order",
+    };
+    if (pendingSl.trim()) {
+      const sl = Number(pendingSl);
+      if (!Number.isFinite(sl) || sl <= 0) { setLiveNote("Enter a valid Stop Loss price."); return; }
+      body.stop_loss_price = sl.toFixed(digits);
+    }
+    if (pendingTp.trim()) {
+      const tp = Number(pendingTp);
+      if (!Number.isFinite(tp) || tp <= 0) { setLiveNote("Enter a valid Take Profit price."); return; }
+      body.take_profit_price = tp.toFixed(digits);
+    }
+    if (Object.values(body).some((value) => value === "NaN")) {
+      setLiveNote("Pending order contains an invalid price or volume.");
+      return;
+    }
+    setLiveNote("Sending pending order…");
+    try {
+      const ack = await placePendingOrder(spec, link.access, body);
+      if (ack.operation_id) {
+        setLiveNote(`Pending order accepted · operation ${ack.operation_id}. Waiting for final status…`);
+        window.setTimeout(async () => {
+          try {
+            const status = await readOperation(spec, link.access, ack.operation_id || "");
+            setLiveNote(`Pending order ${ack.operation_id}: ${status.status || "pending"}${status.error_message ? ` · ${status.error_message}` : ""}`);
+            if (status.status === "confirmed") await connect();
+          } catch {
+            setLiveNote(`Pending order operation ${ack.operation_id} is pending; reconnect to reconcile.`);
+          }
+        }, 1500);
+      } else {
+        setLiveNote("Pending order accepted. Refresh account state to reconcile.");
+      }
+    } catch (error) {
+      setLiveNote(error instanceof Error ? error.message : "Pending order request failed.");
     }
   };
 
@@ -689,6 +761,28 @@ export function Terminal() {
                   disabled={broker.phase !== "ready"}
                 >
                   {liveArmed ? "Disarm live" : "Arm live"}
+                </button>
+              </div>
+              <div className="mt-4 border-t border-line pt-3">
+                <p className="mb-2 text-xs font-semibold text-muted">New pending order</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-xs text-muted">Type
+                    <select className="mt-1 h-10 w-full rounded-lg border border-line bg-bg px-2 text-fg" value={pendingType} onChange={(e) => setPendingType(e.target.value as "limit" | "stop")}>
+                      <option value="limit">Limit</option><option value="stop">Stop</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-muted">Side
+                    <select className="mt-1 h-10 w-full rounded-lg border border-line bg-bg px-2 text-fg" value={pendingSide} onChange={(e) => setPendingSide(e.target.value as Side)}>
+                      <option value="buy">Buy</option><option value="sell">Sell</option>
+                    </select>
+                  </label>
+                  <TextField label="Volume" value={pendingVolume} onChange={setPendingVolume} placeholder="0.01" />
+                  <TextField label="Entry price" value={pendingPrice} onChange={setPendingPrice} placeholder="Price" />
+                  <TextField label="Stop Loss (optional)" value={pendingSl} onChange={setPendingSl} placeholder="SL" />
+                  <TextField label="Take Profit (optional)" value={pendingTp} onChange={setPendingTp} placeholder="TP" />
+                </div>
+                <button type="button" className="btn h-11 mt-2 w-full" onClick={() => void submitPendingOrder()} disabled={broker.phase !== "ready" || broker.tradeMode === "trading_disabled" || broker.accountStatus === "close_only"}>
+                  Place pending order
                 </button>
               </div>
               <p className="mt-3 text-sm text-pretty text-fg">{liveNote}</p>
