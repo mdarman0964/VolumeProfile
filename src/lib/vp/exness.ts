@@ -251,6 +251,8 @@ type RawCandle = {
   low?: number;
   close?: number;
   volume?: number;
+  bid?: { open?: number; high?: number; low?: number; close?: number };
+  ask?: { open?: number; high?: number; low?: number; close?: number };
 };
 
 export type CandleTimeframe = "S1" | "S5" | "S15" | "M1" | "M3" | "M5" | "M10" | "M15" | "M30" | "H1" | "H2" | "H4" | "D1" | "W1" | "MN";
@@ -269,7 +271,8 @@ export async function pullCandles(
     H1: 3_600_000, H2: 7_200_000, H4: 14_400_000, D1: 86_400_000,
     W1: 604_800_000, MN: 2_592_000_000,
   };
-  const from = new Date(Date.now() - Math.abs(count) * durationMs[timeframe]).toISOString();
+  const anchor = Date.now();
+  const from = new Date(count < 0 ? anchor : anchor - count * durationMs[timeframe]).toISOString();
   const query = [
     `instrument=${encodeURIComponent(creds.instrument.trim())}`,
     `price_type=${priceType}`,
