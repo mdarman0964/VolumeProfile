@@ -16,6 +16,7 @@ import {
   type DealHistoryRecord,
   type Creds,
   type Snapshot,
+  type ApiDiagnostic,
 } from "@/lib/vp/exness";
 import {
   DEFAULT_SETTINGS,
@@ -178,6 +179,8 @@ export function Terminal() {
     instrument: "XAUUSD",
   });
   const [broker, setBroker] = useState<Broker>(IDLE_BROKER);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [apiDiagnostics, setApiDiagnostics] = useState<ApiDiagnostic[]>([]);
   const [liveArmed, setLiveArmed] = useState(false);
   const [liveNote, setLiveNote] = useState("Live orders are off.");
   const [pendingType, setPendingType] = useState<"limit" | "stop">("limit");
@@ -208,6 +211,15 @@ export function Terminal() {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState("");
+
+  useEffect(() => {
+    const onDiagnostic = (event: Event) => {
+      const detail = (event as CustomEvent<ApiDiagnostic>).detail;
+      if (detail) setApiDiagnostics((current) => [detail, ...current].slice(0, 30));
+    };
+    window.addEventListener("vela:api-diagnostic", onDiagnostic);
+    return () => window.removeEventListener("vela:api-diagnostic", onDiagnostic);
+  }, []);
 
   const tapeRef = useRef(tape);
   const sessionRef = useRef(session);
@@ -299,7 +311,7 @@ export function Terminal() {
   };
 
   const connect = async () => {
-    setBroker((current) => ({ ...current, phase: "busy", detail: "Discovering the access point…" }));
+    setBroker((current) => ({ ...current, phase: "busy", detail: "Connecting to the configured Exness access point…" }));
     try {
       const result = await pullAccount(credsRef.current);
       const positions = mapSnapshot(result.snapshot);
@@ -327,6 +339,26 @@ export function Terminal() {
       };
       brokerRef.current = next;
       setBroker(next);
+      // Replace the synthetic research tape with broker candles immediately after Connect.
+      try {
+        const rows = await pullCandles(credsRef.current, result.access, 500);
+        const candles: Candle[] = rows.map((row) => ({
+          time: Date.parse(row.time || ""), open: Number(row.open), high: Number(row.high), low: Number(row.low),
+          close: Number(row.close), volume: Number(row.volume) || 0, spread: 0.12,
+        })).filter((candle) => Number.isFinite(candle.time) && candle.high >= candle.low).sort((a, b) => a.time - b.time);
+        if (candles.length < 30) throw new Error("Exness returned fewer than 30 valid candles.");
+        const nextCursor = candles.length - 1;
+        const nextSession = replay(candles, settingsRef.current, nextCursor);
+        tapeRef.current = candles; cursorRef.current = nextCursor; sessionRef.current = nextSession;
+        sourceRef.current = "exness"; seenBar.current = candles[candles.length - 1]?.time ?? 0;
+        setPlaying(false); setSource("exness"); setTape(candles); setCursor(nextCursor); setSession(nextSession);
+        const connected = { ...next, detail: "Connected · " + candles.length + " real Exness candles loaded." };
+        brokerRef.current = connected; setBroker(connected);
+      } catch (candleError) {
+        const message = candleError instanceof Error ? candleError.message : "Candle history request failed.";
+        const connected = { ...next, detail: "Account connected, but live candles failed: " + message };
+        brokerRef.current = connected; setBroker(connected);
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Could not connect.";
       setBroker((current) => ({ ...current, phase: "error", detail }));
@@ -919,7 +951,7 @@ export function Terminal() {
               <h2 className="text-sm font-semibold">Exness</h2>
               <p className="mt-2 text-sm text-pretty text-muted">{broker.detail}</p>
               <div className="mt-3 grid gap-2">
-                <TextField label="Gateway host" value={creds.gateway} onChange={(gateway) => setCreds({ ...creds, gateway })} placeholder="https://…" />
+                <TextField label="Exness access-point URL" value={creds.gateway} onChange={(gateway) => setCreds({ ...creds, gateway })} placeholder="https://assigned-access-point-host" />
                 <TextField label="Account" value={creds.accountId} onChange={(accountId) => setCreds({ ...creds, accountId })} placeholder="123456" />
                 <TextField label="API key" value={creds.apiKey} onChange={(apiKey) => setCreds({ ...creds, apiKey })} placeholder="exnsk-…" />
                 <TextField
@@ -937,6 +969,7 @@ export function Terminal() {
                 <button type="button" className="btn h-11" onClick={() => void loadBrokerCandles()} disabled={!broker.access || broker.phase === "busy"}>
                   Load candles
                 </button>
+                <button type="button" className={debugOpen ? "btn-neon h-11 px-3" : "btn h-11 px-3"} onClick={() => setDebugOpen((open) => !open)}>{debugOpen ? "Hide debug" : "Debug"}</button>
                 <button
                   type="button"
                   className={liveArmed ? "btn h-11 border-down text-down" : "btn h-11"}
@@ -951,6 +984,29 @@ export function Terminal() {
                   {liveArmed ? "Disarm live" : "Arm live"}
                 </button>
               </div>
+              {debugOpen ? (
+                <div className="mt-3 rounded-lg border border-line p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold">API diagnostics · latest 30 requests</p>
+                    <button type="button" className="btn h-8 px-2 text-xs" onClick={() => setApiDiagnostics([])}>Clear</button>
+                  </div>
+                  <p className="mt-1 text-xs text-muted">Credentials are not displayed. Request path, HTTP status, response details and duration are recorded locally.</p>
+                  {apiDiagnostics.length ? (
+                    <ul className="mt-2 space-y-2">
+                      {apiDiagnostics.map((item, index) => (
+                        <li key={item.at + item.path + index} className="rounded border border-line p-2 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 font-mono">
+                            <span>{item.method} {item.path}</span>
+                            <span className={item.ok ? "text-up" : "text-down"}>{String(item.status)} · {item.durationMs} ms</span>
+                          </div>
+                          <p className="mt-1 break-words text-muted">{item.detail}</p>
+                          <p className="mt-1 text-[10px] text-muted">{new Date(item.at).toLocaleString()}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="mt-2 text-xs text-muted">No requests recorded. Tap Connect to collect diagnostics.</p>}
+                </div>
+              ) : null}
               <div className="mt-4 border-t border-line pt-3">
                 <p className="mb-2 text-xs font-semibold text-muted">New pending order</p>
                 <div className="grid grid-cols-2 gap-2">
