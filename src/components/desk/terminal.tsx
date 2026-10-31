@@ -311,7 +311,7 @@ export function Terminal() {
   };
 
   const connect = async () => {
-    setBroker((current) => ({ ...current, phase: "busy", detail: "Discovering the access point…" }));
+    setBroker((current) => ({ ...current, phase: "busy", detail: "Connecting to the configured Exness access point…" }));
     try {
       const result = await pullAccount(credsRef.current);
       const positions = mapSnapshot(result.snapshot);
@@ -339,6 +339,26 @@ export function Terminal() {
       };
       brokerRef.current = next;
       setBroker(next);
+      // Replace the synthetic research tape with broker candles immediately after Connect.
+      try {
+        const rows = await pullCandles(credsRef.current, result.access, 500);
+        const candles: Candle[] = rows.map((row) => ({
+          time: Date.parse(row.time || ""), open: Number(row.open), high: Number(row.high), low: Number(row.low),
+          close: Number(row.close), volume: Number(row.volume) || 0, spread: 0.12,
+        })).filter((candle) => Number.isFinite(candle.time) && candle.high >= candle.low).sort((a, b) => a.time - b.time);
+        if (candles.length < 30) throw new Error("Exness returned fewer than 30 valid candles.");
+        const nextCursor = candles.length - 1;
+        const nextSession = replay(candles, settingsRef.current, nextCursor);
+        tapeRef.current = candles; cursorRef.current = nextCursor; sessionRef.current = nextSession;
+        sourceRef.current = "exness"; seenBar.current = candles[candles.length - 1]?.time ?? 0;
+        setPlaying(false); setSource("exness"); setTape(candles); setCursor(nextCursor); setSession(nextSession);
+        const connected = { ...next, detail: "Connected · " + candles.length + " real Exness candles loaded." };
+        brokerRef.current = connected; setBroker(connected);
+      } catch (candleError) {
+        const message = candleError instanceof Error ? candleError.message : "Candle history request failed.";
+        const connected = { ...next, detail: "Account connected, but live candles failed: " + message };
+        brokerRef.current = connected; setBroker(connected);
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : "Could not connect.";
       setBroker((current) => ({ ...current, phase: "error", detail }));
