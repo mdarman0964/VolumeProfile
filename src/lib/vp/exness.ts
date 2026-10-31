@@ -8,6 +8,12 @@ export type Creds = {
   instrument: string;
 };
 
+export type ApiDiagnostic = { at: string; method: string; path: string; status: number | string; ok: boolean; durationMs: number; detail: string };
+
+function emitApiDiagnostic(entry: ApiDiagnostic): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent<ApiDiagnostic>("vela:api-diagnostic", { detail: entry }));
+}
+
 export class ExnessApiError extends Error {
   status: number;
   code?: string;
@@ -141,41 +147,48 @@ export async function exnessFetch<T>(opts: {
   body?: unknown;
   idempotencyKey?: string;
 }): Promise<T> {
+  const startedAt = Date.now();
   const body = opts.body == null ? "" : JSON.stringify(opts.body);
-  const headers = await signedHeaders({
-    apiKey: opts.apiKey,
-    privateKey: opts.privateKey,
-    method: opts.method,
-    pathWithQuery: opts.pathWithQuery,
-    body,
-    idempotency: opts.idempotencyKey,
+  const url = originOf(opts.base) + opts.pathWithQuery;
+  const finish = (status: number | string, ok: boolean, detail: string) => emitApiDiagnostic({
+    at: new Date().toISOString(), method: opts.method.toUpperCase(), path: opts.pathWithQuery,
+    status, ok, durationMs: Date.now() - startedAt, detail: detail.slice(0, 600),
   });
+  let headers: Record<string, string>;
+  try {
+    headers = await signedHeaders({ apiKey: opts.apiKey, privateKey: opts.privateKey, method: opts.method, pathWithQuery: opts.pathWithQuery, body, idempotency: opts.idempotencyKey });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Request signing failed.";
+    finish("SIGN_ERROR", false, message);
+    throw error;
+  }
   if (body) headers["Content-Type"] = "application/json";
   let response: Response;
   try {
-    response = await fetch(`${originOf(opts.base)}${opts.pathWithQuery}`, {
-      method: opts.method,
-      headers,
-      body: body || undefined,
-      redirect: "error",
-    });
-  } catch {
-    throw new Error("Browser could not reach that host. Paper desk is still running.");
+    response = await fetch(url, { method: opts.method, headers, body: body || undefined });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Network request failed.";
+    finish("NETWORK_ERROR", false, message);
+    throw new Error("Could not reach Exness access point " + originOf(opts.base) + ": " + message);
   }
-  if (!response.ok) throw await readError(response);
+  if (!response.ok) {
+    const apiError = await readError(response);
+    finish(response.status, false, apiError.message);
+    throw apiError;
+  }
   const responseText = await response.text();
-  if (!responseText.trim()) return undefined as T;
+  if (!responseText.trim()) { finish(response.status, true, "Empty response body."); return undefined as T; }
   try {
     const parsed: unknown = JSON.parse(responseText);
-    if (parsed === null || typeof parsed !== "object") {
-      throw new Error("Unexpected response shape.");
-    }
+    if (parsed === null || typeof parsed !== "object") throw new Error("Unexpected response shape.");
+    finish(response.status, true, "JSON response received (" + responseText.length + " bytes).");
     return parsed as T;
   } catch (error) {
     const detail = error instanceof Error ? error.message : "Invalid JSON response.";
-    throw new ExnessApiError(response.status, `Exness API returned an invalid JSON response: ${detail}`);
+    finish(response.status, false, detail);
+    throw new ExnessApiError(response.status, "Exness API returned an invalid JSON response: " + detail);
   }
-}
+}}
 
 export type AccessPoint = { access_point: string; account_id: string };
 
@@ -255,8 +268,9 @@ export async function pullAccount(creds: Creds): Promise<{
   conditions: Conditions;
   snapshot: Snapshot;
 }> {
-  const found = await discoverAccessPoint(creds);
-  const access = found.access_point;
+  // Access-point discovery is not part of the published Trader API contract.
+  // Use the account's assigned Exness access-point host entered by the user.
+  const access = originOf(creds.gateway);
   const id = creds.accountId.trim();
   const account = await exnessFetch<AccountDetails>({
     base: access,
