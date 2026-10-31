@@ -181,13 +181,18 @@ export type AccessPoint = { access_point: string; account_id: string };
 
 export async function discoverAccessPoint(creds: Creds): Promise<AccessPoint> {
   const path = `/v1/trading/access-point?account_id=${encodeURIComponent(creds.accountId.trim())}`;
-  return exnessFetch<AccessPoint>({
+  const response = await exnessFetch<unknown>({
     base: creds.gateway,
     apiKey: creds.apiKey,
     privateKey: creds.privateKey,
     method: "GET",
     pathWithQuery: path,
   });
+  const record = expectRecord(response, "access point");
+  return {
+    access_point: expectStringField(record, "access_point", "access point"),
+    account_id: expectStringField(record, "account_id", "access point"),
+  };
 }
 
 export type AccountDetails = {
@@ -392,7 +397,7 @@ export async function readOperation(
   access: string,
   operationId: string,
 ): Promise<OperationStatus> {
-  if (!/^\\d{1,20}$/.test(operationId)) throw new Error("Invalid operation ID.");
+  if (!/^\d{1,20}$/.test(operationId)) throw new Error("Invalid operation ID.");
   const response = await exnessFetch<unknown>({
     base: access,
     apiKey: creds.apiKey,
@@ -519,7 +524,7 @@ export async function pullSnapshot(creds: Creds, access: string): Promise<Tradin
 }
 
 /** Place a limit/stop pending order or an SLTP instruction, according to the Trader API contract. */
-export function placePendingOrder(
+export async function placePendingOrder(
   creds: Creds,
   access: string,
   body: Record<string, string>,
@@ -534,7 +539,7 @@ export function placePendingOrder(
 }
 
 /** Modify an active pending/SLTP order. Use null to remove an existing SL or TP. */
-export function modifyOrder(
+export async function modifyOrder(
   creds: Creds,
   access: string,
   orderId: string,
@@ -553,7 +558,7 @@ export function modifyOrder(
 }
 
 /** Cancel an active pending or SLTP order. */
-export function cancelOrder(
+export async function cancelOrder(
   creds: Creds,
   access: string,
   orderId: string,
@@ -570,7 +575,7 @@ export function cancelOrder(
 }
 
 /** Close a position fully, or partially when volume is supplied. */
-export function closePosition(
+export async function closePosition(
   creds: Creds,
   access: string,
   positionId: string,
@@ -617,7 +622,7 @@ function historyQuery(range: HistoryRange): string {
 }
 
 /** Historical orders only; active orders must be read from the trading snapshot. */
-export function pullOrderHistory(
+export async function pullOrderHistory(
   creds: Creds, access: string, range: HistoryRange,
 ): Promise<HistoryPage<OrderHistoryRecord>> {
   const response = await exnessFetch<unknown>({
@@ -629,7 +634,7 @@ export function pullOrderHistory(
 }
 
 /** Historical deals, including close/open and balance-related activity. */
-export function pullDealHistory(
+export async function pullDealHistory(
   creds: Creds, access: string, range: HistoryRange,
 ): Promise<HistoryPage<DealHistoryRecord>> {
   const response = await exnessFetch<unknown>({
